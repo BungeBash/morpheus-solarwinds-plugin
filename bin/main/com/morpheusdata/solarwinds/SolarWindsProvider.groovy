@@ -488,21 +488,12 @@ class SolarWindsProvider implements IPAMProvider {
                 }
 
             } else {
-                if (inetAddressValidator.isValidInet4Address(networkPoolIp.ipAddress)) {
-                    log.info("A Valid IPv4 Address Entered: ${networkPoolIp.ipAddress}")
-                } else if (inetAddressValidator.isValidInet6Address(networkPoolIp.ipAddress)) {
-                    log.info("A Valid IPv6 Address Entered: ${networkPoolIp.ipAddress}")
-                } else {
-                    log.error("Invalid IP Address Requested: ${networkPoolIp.ipAddress}", results)
-                    return ServiceResponse.error("Invalid IP Address Requested: ${networkPoolIp.ipAddress}")
-                }
-
-                apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}' AND (Status = 1 OR Status = 4)".toString()])
+                apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}' AND Status = 2".toString()])
                 results = client.callJsonApi(poolServer.serviceUrl,queryPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'GET')
 
                 def dataSet = results.data.results
-
-                if(results.success && !dataSet) {
+                if(results.success && dataSet) {
+                    networkPoolIp.externalId = dataSet.first().IpNodeId.toString()
                     apiOpts.body = JsonOutput.toJson([networkPoolIp.ipAddress,'Used'])
                     results = client.callJsonApi(poolServer.serviceUrl,changeIpStatusPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
                 }else {
