@@ -56,6 +56,7 @@ class SolarWindsProvider implements IPAMProvider {
     final String startIpReservationPath = "/Solarwinds/InformationService/v3/json/Invoke/IPAM.SubnetManagement/StartIpReservation"
     final String finishIpReservationPath = "/Solarwinds/InformationService/v3/json/Invoke/IPAM.SubnetManagement/FinishIpReservation"
     final String changeIpStatusPath = "/Solarwinds/InformationService/v3/json/Invoke/IPAM.SubnetManagement/ChangeIpStatus"
+    final String createIpPath = "/Solarwinds/InformationService/v3/json/Create/IPAM.IPNode"
 
     final String queryPath = "/Solarwinds/InformationService/v3/json/Query"
 
@@ -477,6 +478,7 @@ class SolarWindsProvider implements IPAMProvider {
             HttpApiClient.RequestOptions apiOpts = new HttpApiClient.RequestOptions(ignoreSSL: poolServer.ignoreSsl)
             apiOpts.body = JsonOutput.toJson([cidrArgs[0], cidrArgs[1], 10])
             def results
+            def missing = false
             if(!networkPoolIp.ipAddress) {
                 results = client.callApi(poolServer.serviceUrl,startIpReservationPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
 
@@ -497,37 +499,42 @@ class SolarWindsProvider implements IPAMProvider {
                     return ServiceResponse.error("Invalid IP Address Requested: ${networkPoolIp.ipAddress}")
                 }
 
-                apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}' AND (Status = 1 OR Status = 4)".toString()])
+                apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}'".toString()])
                 results = client.callJsonApi(poolServer.serviceUrl,queryPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'GET')
 
                 def dataSet = results.data.results
 
                 if(results.success && !dataSet) {
+                    // Need to Create IP in Subnet
+                    missing = true
+                    apiOpts.body = JsonOutput.toJson(['IPAddress':networkPoolIp.ipAddress,'status':1,'IPOrdinal':0,'DNSBackward':hostname,'SubnetId':networkPool.externalId])
+                    results = client.callJsonApi(poolServer.serviceUrl,createIpPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
+                } else if (results.success && dataSet && dataSet.Status != 1) {
+                    // Make sure it's not 'Used'
                     apiOpts.body = JsonOutput.toJson([networkPoolIp.ipAddress,'Used'])
                     results = client.callJsonApi(poolServer.serviceUrl,changeIpStatusPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
-                }else {
+                } else {
                     return ServiceResponse.error("Error allocating host record to the specified ip: ${networkPoolIp.ipAddress}",null,networkPoolIp)
                 }
             }
 
-
-
             if(results?.success) {
-                if(!networkPoolIp.externalId) {
+                if (!missing) {
+                    if (!networkPoolIp.externalId) {
+                        apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}'".toString()])
+                        results = client.callJsonApi(poolServer.serviceUrl,queryPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'GET')
 
-                    apiOpts = new HttpApiClient.RequestOptions(queryParams: [query: "SELECT IpNodeId,IPAddress,Status FROM IPAM.IPNode WHERE IPAddress = '${networkPoolIp.ipAddress}'".toString()])
-
-                    results = client.callJsonApi(poolServer.serviceUrl,queryPath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'GET')
-
-                    def dataSet = results.data.results
-                    if(results.success && dataSet) {
-                        networkPoolIp.externalId = dataSet.first().IpNodeId.toString()
+                        dataSet = results.data.results
+                        
+                        if (results.success && dataSet) {
+                            networkPoolIp.externalId = dataSet.first().IpNodeId.toString()
+                        }
                     }
-                }
-                def updatePath = "/SolarWinds/InformationService/v3/Json/swis://${new URL(poolServer.serviceUrl).host}/Orion/IPAM.IPNode/IpNodeId=${networkPoolIp.externalId}"
+                    def updatePath = "/SolarWinds/InformationService/v3/Json/swis://${new URL(poolServer.serviceUrl).host}/Orion/IPAM.IPNode/IpNodeId=${networkPoolIp.externalId}"
 
-                apiOpts = new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'],body: JsonOutput.toJson(['DNSBackward':hostname]))
-                client.callApi(poolServer.serviceUrl,updatePath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
+                    apiOpts = new HttpApiClient.RequestOptions(headers:['Content-Type':'application/json'],body: JsonOutput.toJson(['DNSBackward':hostname]))
+                    client.callApi(poolServer.serviceUrl,updatePath,poolServer.credentialData?.username as String  ?: poolServer.serviceUsername, poolServer.credentialData?.password as String  ?: poolServer.servicePassword, apiOpts,'POST')
+                }
 
                 if (networkPoolIp.id) {
                     networkPoolIp = morpheus.network.pool.poolIp.save(networkPoolIp)?.blockingGet()
